@@ -1,0 +1,132 @@
+# Project-owned vLLM profile for this project's book-market simulation.
+#
+# Deliberately NOT shared with "parte 4"'s compose file (different compose project name,
+# different service, own named volume): this project only reuses the already-pulled
+# `vllm/vllm-openai:v0.29.0` image, never parte 4's container, network or LoRA setup.
+#
+# Sized for one RTX 3060 Laptop GPU (6 GB VRAM, ~0.8-1 GB already used by the desktop):
+# a small instruct model, modest context length, and enough concurrent sequence slots for
+# this project's five agents (3 sellers + 2 buyers) each sending one short prompt per
+# iteration. See docs/uso/ejecucion.md for how to start/stop it, why the default model and
+# --gpu-memory-utilization are what they are (both verified live against real crashes under
+# this project's actual 5-concurrent-request load), and docs/uso/configuracion.md for every
+# override below.
+#
+# `--served-model-name` (below) gives this model a second, stable alias, `market-llm`: Java's
+# LLM_MODEL default is that alias, not a real HuggingFace repo id, so changing the model this
+# server serves only ever means changing VLLM_MODEL/this file, never AppConfig's default too.
+name: llm-mas-market
+
+services:
+  vllm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.29.0}
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      # Offline by default: the model already lives in the `llm-mas-market-hf-cache` volume, and
+      # without this vLLM asks the Hub on every start (two "You are sending unauthenticated
+      # requests to the HF Hub" warnings, plus a network round trip). With offline mode vLLM
+      # resolves the id to the local snapshot; `--served-model-name` below still exposes both
+      # `Qwen/Qwen3.5-0.8B` and `market-llm` (verified live). The FIRST start on a machine (or
+      # after changing VLLM_MODEL to an uncached model) has nothing to resolve and fails; run it
+      # once as `HF_HUB_OFFLINE=0 scripts/llm-server.sh up`. See docs/uso/problemas-frecuentes.md.
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      # Legacy nvidia-container-runtime env vars. Needed alongside `runtime: nvidia` on this
+      # host: without them, `torch.cuda.is_available()` fails inside the container with
+      # "CUDA unknown error", even though `docker run --runtime=nvidia -e
+      # NVIDIA_VISIBLE_DEVICES=all ... nvidia-smi` on its own works fine.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    runtime: nvidia
+    ipc: host
+    # Docker's default (10 s) equals the vLLM drain timeout below, so it could SIGKILL the
+    # server just before its own graceful exit; 20 s leaves headroom.
+    stop_grace_period: 20s
+    command:
+      # Model history (see docs/uso/ejecucion.md for the full account): Qwen2.5-3B-Instruct-AWQ
+      # was tried first but its AWQ/Marlin kernel fatally crashed vLLM's engine under this
+      # project's real load (5 concurrent agents/iteration); the unquantized fallback
+      # Qwen2.5-1.5B-Instruct avoided that crash and ran stably, but never closed a sale across
+      # 5 verification runs with PLANNER=llm (a model-capability limit, not a transport/format
+      # one - see docs/uso/resultados.md). Current default, Qwen3.5-0.8B: smaller still, and
+      # unlike the 2.5 family does not emit a <think> reasoning block by default, so there is
+      # less to strip/parse around. Verified live: loads and serves at ~4.4 GB of this GPU's
+      # 6 GB VRAM.
+      - ${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+      # Two served names for the one model above: the real HuggingFace id first (so tools that
+      # expect it, e.g. `huggingface`-aware clients, still work), then the stable alias
+      # `market-llm` that AppConfig's LLM_MODEL defaults to. Verified live: /v1/models lists
+      # both, and a chat request with "model": "market-llm" is served by the same engine.
+      - --served-model-name
+      - ${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+      - market-llm
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      # Measured against this project's actual system+user prompts (see
+      # docs/uso/ejecucion.md): a few hundred tokens in, well under 4096, but the buyer/seller
+      # roster+examples text plus a growing history/inbox block can still grow, so this keeps
+      # headroom without paying for a much larger KV cache than this GPU can afford.
+      - --max-model-len
+      - "${VLLM_MAX_MODEL_LEN:-4096}"
+      # Five agents can each have one request in flight per iteration (3 sellers + 2 buyers);
+      # 8 gives headroom without over-provisioning KV cache for a GPU this small.
+      - --max-num-seqs
+      - "${VLLM_MAX_NUM_SEQS:-8}"
+      # With the larger Qwen2.5-1.5B-Instruct fallback, 0.80 (vLLM's own default-ish
+      # suggestion) left too little headroom outside vLLM's pre-reserved pool: real
+      # 5-concurrent-agent load (different prompts, no shared prefix cache benefit) hit a
+      # fatal "CUDA out of memory" mid-forward-pass, crashing the whole engine; 0.68 was
+      # verified stable under that model. The current default model, Qwen3.5-0.8B, is much
+      # smaller (~4.4 GB used out of 6 GB at 0.8, verified stable across real concurrent
+      # load), so 0.80 is back to being safe. If you switch VLLM_MODEL to a larger model,
+      # re-apply that lesson and lower this again if you see the same OOM.
+      - --gpu-memory-utilization
+      - "${VLLM_GPU_MEMORY_UTILIZATION:-0.8}"
+      # Kept on purpose: predictable VRAM and a ~50 s start on 6 GB. Its two WARNING lines at
+      # startup ("Enforce eager set, disabling torch.compile and CUDAGraphs" and "Inductor
+      # compilation was disabled by user settings", each printed twice) are expected and
+      # informational: the second is just a consequence of the first. Dropping the flag would
+      # enable CUDA graphs + torch.compile (faster decode, slower start, more VRAM); that is only
+      # worth a separate measured trial, not a warning fix.
+      - --enforce-eager
+      # Qwen3.5-0.8B is a vision-language checkpoint (`Qwen3_5ForConditionalGeneration`), but this
+      # project only ever sends text. `--language-model-only` sets every modality limit to 0, so
+      # vLLM skips the image/video processor and the vision-encoder profiling. Verified in a probe
+      # against the same command without it: the transformers `use_fast` deprecation and the
+      # Qwen3VL `cap_pixels_per_frame` warning are gone, so is the ~13 s multimodal warmup; the KV
+      # cache grew 1.39 -> 2.6 GiB (peak activation 1.32 -> 0.3 GiB) and engine init dropped from
+      # 65 s to 51 s. Remove it only if a future step needs to send images or video.
+      - --language-model-only
+      # Graceful shutdown. vLLM's default (0) is abort mode, which ends with a "force killing
+      # remaining processes" warning; a positive value switches to drain mode (`mode=drain`), and
+      # the server exits cleanly in about a second when idle (verified). `stop_grace_period`
+      # below must stay above this value so Docker does not SIGKILL vLLM before its own timeout.
+      - --shutdown-timeout
+      - "${VLLM_SHUTDOWN_TIMEOUT:-10}"
+      # The default structured-output backend (xgrammar) intermittently let the model sample
+      # EOS and then rejected it ("Failed to advance FSM ... tokens 151643", HTTP 500): 2 of
+      # 200 requests with this project's per-role regexes. The guidance backend served 300 of
+      # 300 of the same requests without errors (verified live, vLLM v0.29.0).
+      - --structured-outputs-config.backend
+      - guidance
+    # Deliberately no `deploy.resources.reservations.devices` block: combining it with
+    # `runtime: nvidia` on this host produced two conflicting device-visibility mechanisms
+    # and torch saw "CUDA unknown error" inside the container. `runtime: nvidia` plus the
+    # NVIDIA_VISIBLE_DEVICES/NVIDIA_DRIVER_CAPABILITIES env vars above is sufficient alone
+    # (verified with `docker run --runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all ... nvidia-smi`).
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/v1/models >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 180
+      start_period: 30s
+
+volumes:
+  hf-cache:
+    name: llm-mas-market-hf-cache

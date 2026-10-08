@@ -12,7 +12,8 @@ import java.util.concurrent.CompletionException;
  * el agente sigue ejecutando sus otros comportamientos y {@link #alResponder} / {@link #alFallar}
  * se invocan en el hilo del propio agente, por lo que el código del usuario no necesita sincronización.
  *
- * <p>Es de un solo uso: cada consulta requiere una instancia nueva.
+ * <p>Es de un solo uso: cada consulta requiere una instancia nueva. Como en cualquier comportamiento,
+ * si {@link #alResponder} o {@link #alFallar} lanzan una excepción, JADE termina al agente.
  */
 public abstract class ConsultaLlmBehaviour extends Behaviour {
 
@@ -49,7 +50,7 @@ public abstract class ConsultaLlmBehaviour extends Behaviour {
     public void action() {
         if (pendiente == null) {
             pendiente = cliente.completarAsync(mensajes, regex);
-            // Se ejecuta en el hilo del HttpClient; restart() es seguro entre hilos y despierta al agente.
+            // Se ejecuta en un hilo ajeno al agente; restart() es seguro entre hilos y lo despierta.
             pendiente.whenComplete((respuesta, error) -> restart());
         }
         // Se bloquea primero y se comprueba después: cualquier mensaje ACL también despierta a un

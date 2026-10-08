@@ -33,7 +33,12 @@ public class AgentePruebaLlm extends Agent {
     protected void setup() {
         getContentManager().registerLanguage(codec);
         getContentManager().registerOntology(JADEManagementOntology.getInstance());
-        cliente = ClienteLlm.desdeEntorno();
+        try {
+            cliente = ClienteLlm.desdeEntorno();
+        } catch (LlmException e) {
+            informarErrorYApagar(e);
+            return;
+        }
 
         latido = new TickerBehaviour(this, PERIODO_LATIDO_MS) {
             @Override
@@ -86,7 +91,9 @@ public class AgentePruebaLlm extends Agent {
 
     /** Pide al AMS que apague la plataforma; con {@code jade.Boot} esto termina la JVM. */
     private void apagarPlataforma() {
-        latido.stop();
+        if (latido != null) {
+            latido.stop();
+        }
         ACLMessage mensaje = new ACLMessage(ACLMessage.REQUEST);
         mensaje.addReceiver(getAMS());
         mensaje.setLanguage(codec.getName());

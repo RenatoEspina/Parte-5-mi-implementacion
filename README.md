@@ -44,7 +44,7 @@ addBehaviour(new ConsultaLlmBehaviour(this, cliente, List.of(
 ```
 
 No se debe llamar a `cliente.completar(...)` dentro de `action()`: bloquea el único hilo del agente y detiene todos sus comportamientos.
-Para forzar el formato de la respuesta se pasa una expresión regular como cuarto argumento del constructor (o como segundo de `completar` y `completarAsync`); el servidor genera únicamente texto que la cumpla.
+Para forzar el formato de la respuesta se pasa una expresión regular como cuarto argumento del constructor (o como segundo de `completar` y `completarAsync`); el servidor genera únicamente texto que la cumpla. Si `LLM_MAX_TOKENS` corta la respuesta antes de completarla, la consulta falla en lugar de devolver un texto parcial.
 
 ## Variables de entorno del cliente
 

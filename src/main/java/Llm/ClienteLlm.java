@@ -110,21 +110,21 @@ public class ClienteLlm {
      * @throws LlmException ante cualquier fallo de la consulta
      */
     public String completar(List<Mensaje> mensajes, String regex) {
-        HttpRequest peticion = construirPeticion(mensajes, regex);
         try {
-            return extraerContenido(http.send(peticion, HttpResponse.BodyHandlers.ofString()));
-        } catch (IOException e) {
-            throw convertir(e);
+            HttpRequest peticion = construirPeticion(mensajes, regex);
+            return extraerContenido(http.send(peticion, HttpResponse.BodyHandlers.ofString()), regex != null);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new LlmException("Consulta al LLM interrumpida", e);
+        } catch (IOException | RuntimeException e) {
+            throw convertir(e);
         }
     }
 
     /**
      * Consulta al LLM sin bloquear. El futuro termina con el texto de la respuesta o, si falla, de forma
-     * excepcional con una {@link LlmException}. Sus etapas dependientes se ejecutan en un hilo del
-     * {@code HttpClient}, no en el del agente; en un agente conviene usar {@link ConsultaLlmBehaviour}.
+     * excepcional con una {@link LlmException}. Sus etapas dependientes se ejecutan en un hilo de un
+     * pool, no en el del agente; en un agente conviene usar {@link ConsultaLlmBehaviour}.
      *
      * @param regex expresión regular a la que debe ajustarse la respuesta completa; puede ser {@code null}
      */
@@ -137,7 +137,7 @@ public class ClienteLlm {
                             if (error != null) {
                                 resultado.completeExceptionally(convertir(error));
                             } else {
-                                resultado.complete(extraerContenido(respuesta));
+                                resultado.complete(extraerContenido(respuesta, regex != null));
                             }
                         } catch (RuntimeException e) {
                             resultado.completeExceptionally(convertir(e));
@@ -192,21 +192,26 @@ public class ClienteLlm {
         }
     }
 
-    private String extraerContenido(HttpResponse<String> respuesta) {
+    private String extraerContenido(HttpResponse<String> respuesta, boolean conRegex) {
         String cuerpo = respuesta.body();
         if (respuesta.statusCode() != 200) {
             String recorte = cuerpo.length() > MAX_CARACTERES_ERROR
                     ? cuerpo.substring(0, MAX_CARACTERES_ERROR) : cuerpo;
             throw new LlmException("HTTP " + respuesta.statusCode() + ": " + recorte);
         }
-        JsonNode contenido;
+        JsonNode eleccion;
         try {
-            contenido = json.readTree(cuerpo).path("choices").path(0).path("message").path("content");
+            eleccion = json.readTree(cuerpo).path("choices").path(0);
         } catch (JsonProcessingException e) {
             throw new LlmException("La respuesta del servidor LLM no es JSON válido", e);
         }
+        JsonNode contenido = eleccion.path("message").path("content");
         if (!contenido.isTextual() || contenido.asText().isBlank()) {
             throw new LlmException("La respuesta del servidor LLM no trae texto en choices[0].message.content");
+        }
+        // Una respuesta cortada por max_tokens es solo un prefijo: con regex ya no garantiza cumplirla.
+        if (conRegex && "length".equals(eleccion.path("finish_reason").asText())) {
+            throw new LlmException("La respuesta se cortó por max_tokens antes de completar la regex");
         }
         return contenido.asText().strip();
     }
@@ -218,8 +223,9 @@ public class ClienteLlm {
         if (causa instanceof LlmException llm) {
             return llm;
         }
-        String detalle = causa.getClass().getSimpleName()
-                + (causa.getMessage() != null ? ": " + causa.getMessage() : "");
+        // El texto de IllegalArgumentException puede citar cabeceras, incluida la clave de la API: no se copia.
+        boolean citable = causa.getMessage() != null && !(causa instanceof IllegalArgumentException);
+        String detalle = causa.getClass().getSimpleName() + (citable ? ": " + causa.getMessage() : "");
         return new LlmException("Falló la consulta al servidor LLM (" + detalle + ")", causa);
     }
 

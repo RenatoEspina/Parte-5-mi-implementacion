@@ -70,6 +70,15 @@ Out: agent logic, prompts, MAPE-K loop, market rules (owner implements them). Th
 - Deviation accepted: the smoke ticker runs every 20 ms (not 200 ms) because the warm server answers in 50-140 ms.
 - Not verified: request timeout against a hung server, an invalid regex, `ClienteLlm.disponible()` (compiles, never called in a run).
 
+- Commit: `c0fdda9`. Review assessment over `main..c0fdda9`: high (`process_boundary` on `AgentePruebaLlm.java`), due. The returned preflight STATUS asked for an `intended_untracked_selection` input (the owner's untracked `.atl/` and `Agentes/` files); its exact JSON format is not documented by the tool and one attempt was refused (`invalid_request`), so no native review transaction was started. Fallback per the off path for a high tier: independent verifier.
+
+### Independent verification and correction (2026-10-08)
+
+- Independent read-only verifier: `pass-with-findings`. Live evidence: timeout honoured in 2.0 s (sync and async, also with a stalled body); invalid regex -> `HTTP 400` as `LlmException`; `disponible()` true/false without throwing; regex replies 20/20 matching; callbacks exactly once and on the agent thread under ~450 ACL wake-ups; 4500/4500 sequential queries with 1 ms ACL pings, 0 double callbacks, 0 hangs; 16 threads and 5 agents on one shared client; agent deleted while pending raises nothing.
+- Six low-severity findings, all corrected in one pass: a regex reply truncated by `max_tokens` is now an error instead of a non-matching prefix; `IllegalArgumentException` text (which can quote the API key header) is no longer copied into the error message; blocking `completar` now wraps runtime failures as `LlmException` like the async path; Javadoc states that a throwing callback ends the agent (standard JADE); the smoke agent shuts down when an `LLM_*` number is invalid instead of hanging; thread wording in two comments.
+- Checks after the correction: `mvn -o -q compile` exit 0; smoke exit 0 (14 ticker lines, both replies); `LLM_MAX_TOKENS=2` -> "se cortó por max_tokens" via `alFallar`, exit 0; `LLM_TIMEOUT_SECONDS=abc` -> error and exit 0 (was a hang); key with a newline -> error without the key text, exit 0.
+- Not verified: connect timeout against a non-routable address; a truly cold start with all three cache volumes empty in graphs mode (86 s was measured with the driver/Triton caches already warm).
+
 ## Next step
 
 Owner: implement the agents on top of `Llm.ConsultaLlmBehaviour`. Optional: try a larger model now that 8 GB allows it (needs a download, so the owner's approval).

@@ -23,7 +23,7 @@ Out: agent logic, prompts, MAPE-K loop, market rules (owner implements them). Th
 - Local only: no model download (use what the `llm-mas-market-hf-cache` volume already holds), no push/PR.
 - Java identifiers and comments in neutral Spanish, matching the existing `Agentes` package; compose/pom comments in English.
 - TDD: off (source: no project/session configuration; `pom.xml` has no test framework or runner). Functional checks instead.
-- Delivery: local work-unit commits on `feat/jade-vllm-connection`; forecast ~380 authored lines (under the ~400 budget). Push/PR/merge are the owner's decision.
+- Delivery: local work-unit commits on `feat/jade-vllm-connection`. Forecast was ~380 authored lines; actual is ~700 (T1 185, T2 ~520: the client grew with Javadoc and error handling). No PR is planned by this feature, so no chain strategy was chosen; push/PR/merge are the owner's decision.
 
 ## Evidence gathered (2026-10-08)
 
@@ -37,7 +37,7 @@ Out: agent logic, prompts, MAPE-K loop, market rules (owner implements them). Th
   - Persist JIT caches in named volumes; size the KV cache explicitly instead of taking 80 % of VRAM; raise context to 8192; decide `--enforce-eager` from a measured trial; rewrite comments for this project/machine.
   - Acceptance: `down` + `up` reaches healthy in well under the 150 s cold start; VRAM footprint leaves headroom for the desktop; chat + regex-constrained requests succeed under 5 concurrent requests.
   - Checks: `docker compose up -d --wait`, `/v1/models`, throughput probe (single + x5 + regex), `nvidia-smi`.
-- [ ] **T2 — Java client + JADE behaviour**. Route: delegated writer (2+ non-trivial files).
+- [x] **T2 — Java client + JADE behaviour**. Route: delegated writer (2+ non-trivial files).
   - `Llm.ClienteLlm` (OpenAI-compatible chat completions over `java.net.http`, sync + async, optional regex-constrained output, config from environment), `Llm.ConsultaLlmBehaviour` (non-blocking: the agent keeps running its other behaviours while the LLM answers; callbacks run on the agent thread), `Llm.AgentePruebaLlm` (smoke agent), Jackson dependency, `README.md` usage section.
   - Acceptance: an agent gets an LLM reply through the behaviour while a second behaviour keeps ticking; errors (server down) reach `alFallar` instead of hanging the agent.
   - Checks: `mvn -o -q compile`; live smoke with the demo agent against the T1 server, and once with the server unreachable.
@@ -57,6 +57,19 @@ Out: agent logic, prompts, MAPE-K loop, market rules (owner implements them). Th
 - Stress: 3 rounds x 8 concurrent requests, ~5.7k prompt tokens each, half regex-constrained: 24/24 HTTP 200, GPU memory stable at 4827 MiB, no engine errors. `structured_outputs.regex` returns conforming text (`Buy_Book{29}`). No `<think>` block in replies.
 - Not done: no larger model was tried (Qwen3.5-2B/4B are not downloaded; downloading needs the owner's approval).
 
+- Commit: `6cb7046`. Review assessment (`--base-ref main --committed-only`, owner's untracked files excluded): medium (`configuration_change`), not due (`under_budget`).
+
+### T2 (done, 2026-10-08) — delegated writer, parent readback + spot check
+
+- Files: `pom.xml` (+Jackson 2.18.2), `src/main/java/Llm/{ClienteLlm,ConsultaLlmBehaviour,LlmException,AgentePruebaLlm}.java`, `README.md`.
+- `mvn -o -q compile`: exit 0.
+- Live smoke `mvn -o -q compile exec:java -Dexec.args="-agents prueba:Llm.AgentePruebaLlm"`: exit 0, returns by itself; 9 ticker lines before the first reply (agent not blocked), free-text reply, regex reply `RECHAZAR`.
+- Server unreachable (`LLM_BASE_URL=http://127.0.0.1:9/v1`): `alFallar` receives `ConnectException`, platform shuts down, exit 0.
+- Writer's extra check: unknown model + API key -> `HTTP 404` surfaced through `alFallar`.
+- Parent fixes after readback: smoke command now includes `compile`; one missing accent in an error message.
+- Deviation accepted: the smoke ticker runs every 20 ms (not 200 ms) because the warm server answers in 50-140 ms.
+- Not verified: request timeout against a hung server, an invalid regex, `ClienteLlm.disponible()` (compiles, never called in a run).
+
 ## Next step
 
-T2.
+Owner: implement the agents on top of `Llm.ConsultaLlmBehaviour`. Optional: try a larger model now that 8 GB allows it (needs a download, so the owner's approval).

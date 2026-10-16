@@ -1,167 +1,66 @@
 package Agentes;
 
-import jade.core.AID;
-import jade.core.Agent;
-import jade.core.behaviours.*;
-import jade.domain.DFService;
-import jade.domain.FIPAException;
-import jade.domain.FIPAAgentManagement.DFAgentDescription;
-import jade.domain.FIPAAgentManagement.ServiceDescription;
-import jade.lang.acl.ACLMessage;
-import jade.lang.acl.MessageTemplate;
+import Comportamientos.*;
 
-public class BookBuyerAgent extends Agent {
-	// The title of the book to buy
-	private String targetBookTitle;
-	// The list of known seller agents
-	private AID[] sellerAgents;
+public class BookBuyerAgent extends BDIAgent {
+    private String targetBookTitle;
+    private boolean boughtBook = false;
 
-	// Put agent initializations here
-	protected void setup() {
-		// Printout a welcome message
-		System.out.println("Hallo! Buyer-agent "+getAID().getName()+" is ready.");
+    @Override
+    protected void setup() {
+        System.out.println("Hallo! AI Buyer-agent " + getLocalName() + " is ready.");
 
-		// Get the title of the book to buy as a start-up argument
-		Object[] args = getArguments();
-		if (args != null && args.length > 0) {
-			targetBookTitle = (String) args[0];
-			System.out.println("Target book is "+targetBookTitle);
+        Object[] args = getArguments();
+        if (args != null && args.length > 0) {
+            targetBookTitle = args[0].toString().trim();
 
-			// Add a TickerBehaviour that schedules a request to seller agents every minute
-			addBehaviour(new TickerBehaviour(this, 60000) {
-				protected void onTick() {
-					System.out.println("Trying to buy "+targetBookTitle);
-					// Update the list of seller agents
-					DFAgentDescription template = new DFAgentDescription();
-					ServiceDescription sd = new ServiceDescription();
-					sd.setType("book-selling");
-					template.addServices(sd);
-					try {
-						DFAgentDescription[] result = DFService.search(myAgent, template); 
-						System.out.println("Found the following seller agents:");
-						sellerAgents = new AID[result.length];
-						for (int i = 0; i < result.length; ++i) {
-							sellerAgents[i] = result[i].getName();
-							System.out.println(sellerAgents[i].getName());
-						}
-					}
-					catch (FIPAException fe) {
-						fe.printStackTrace();
-					}
+            // Inicializar arquitectura BDIS consciente de las iteraciones y del premio
+            setSkills(
+                "SOLICITAR_COTIZACION (Acción 1: enviar CFP a vendedores) | " +
+                "SOLICITAR_COMPRA (Acción 2: enviar ACCEPT_PROPOSAL al vendedor más barato) | " +
+                "ESPERAR_ITERACION (Acción 2 alternativa: no comprar aún si quedan iteraciones para que los vendedores bajen precios)"
+            );
+            setBeliefs("Iteración 1/6. Libro buscado: '" + targetBookTitle + "'. Estado del mundo: aún no conozco los precios ni el stock de los vendedores.");
+            setDesires("Comprar el libro '" + targetBookTitle + "' al menor precio posible antes de que termine la iteración 6 para ganar el premio al comprador que compró más barato.");
+            setIntentions("Esperar inicio de iteración para ejecutar mis 2 acciones.");
 
-					// Perform the request
-					myAgent.addBehaviour(new RequestPerformer());
-				}
-			} );
-		}
-		else {
-			// Make the agent terminate
-			System.out.println("No target book title specified");
-			doDelete();
-		}
-	}
+            try {
+                Class<?> entornoClass = Class.forName("Entorno");
+                entornoClass.getMethod("registerBuyer", String.class, BookBuyerAgent.class)
+                        .invoke(null, getLocalName(), this);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        } else {
+            System.out.println("No target book title specified");
+            doDelete();
+        }
+    }
 
-	// Put agent clean-up operations here
-	protected void takeDown() {
-		// Printout a dismissal message
-		System.out.println("Buyer-agent "+getAID().getName()+" terminating.");
-	}
+    public void startIterationTurn(int iteration, int maxIter) {
+        setIterationContext(iteration, maxIter);
+        if (!boughtBook) {
+            adoptIntention(
+                "Iteración " + iteration + "/" + maxIter + ": Descubrir vendedores y ejecutar mis 2 acciones de esta iteración",
+                new FindSellersTickerBehaviour(this, 100)
+            );
+        }
+    }
 
-	/**
-	   Inner class RequestPerformer.
-	   This is the behaviour used by Book-buyer agents to request seller 
-	   agents the target book.
-	 */
-	private class RequestPerformer extends Behaviour {
-		private AID bestSeller; // The agent who provides the best offer 
-		private int bestPrice;  // The best offered price
-		private int repliesCnt = 0; // The counter of replies from seller agents
-		private MessageTemplate mt; // The template to receive replies
-		private int step = 0;
+    public String getTargetBookTitle() {
+        return targetBookTitle;
+    }
 
-		public void action() {
-			switch (step) {
-			case 0:
-				// Send the cfp to all sellers
-				ACLMessage cfp = new ACLMessage(ACLMessage.CFP);
-				for (int i = 0; i < sellerAgents.length; ++i) {
-					cfp.addReceiver(sellerAgents[i]);
-				} 
-				cfp.setContent(targetBookTitle);
-				cfp.setConversationId("book-trade");
-				cfp.setReplyWith("cfp"+System.currentTimeMillis()); // Unique value
-				myAgent.send(cfp);
-				// Prepare the template to get proposals
-				mt = MessageTemplate.and(MessageTemplate.MatchConversationId("book-trade"),
-						MessageTemplate.MatchInReplyTo(cfp.getReplyWith()));
-				step = 1;
-				break;
-			case 1:
-				// Receive all proposals/refusals from seller agents
-				ACLMessage reply = myAgent.receive(mt);
-				if (reply != null) {
-					// Reply received
-					if (reply.getPerformative() == ACLMessage.PROPOSE) {
-						// This is an offer 
-						int price = Integer.parseInt(reply.getContent());
-						if (bestSeller == null || price < bestPrice) {
-							// This is the best offer at present
-							bestPrice = price;
-							bestSeller = reply.getSender();
-						}
-					}
-					repliesCnt++;
-					if (repliesCnt >= sellerAgents.length) {
-						// We received all replies
-						step = 2; 
-					}
-				}
-				else {
-					block();
-				}
-				break;
-			case 2:
-				// Send the purchase order to the seller that provided the best offer
-				ACLMessage order = new ACLMessage(ACLMessage.ACCEPT_PROPOSAL);
-				order.addReceiver(bestSeller);
-				order.setContent(targetBookTitle);
-				order.setConversationId("book-trade");
-				order.setReplyWith("order"+System.currentTimeMillis());
-				myAgent.send(order);
-				// Prepare the template to get the purchase order reply
-				mt = MessageTemplate.and(MessageTemplate.MatchConversationId("book-trade"),
-						MessageTemplate.MatchInReplyTo(order.getReplyWith()));
-				step = 3;
-				break;
-			case 3:      
-				// Receive the purchase order reply
-				reply = myAgent.receive(mt);
-				if (reply != null) {
-					// Purchase order reply received
-					if (reply.getPerformative() == ACLMessage.INFORM) {
-						// Purchase successful. We can terminate
-						System.out.println(targetBookTitle+" successfully purchased from agent "+reply.getSender().getName());
-						System.out.println("Price = "+bestPrice);
-						myAgent.doDelete();
-					}
-					else {
-						System.out.println("Attempt failed: requested book already sold.");
-					}
+    public synchronized boolean hasBoughtBook() {
+        return boughtBook;
+    }
 
-					step = 4;
-				}
-				else {
-					block();
-				}
-				break;
-			}        
-		}
+    public synchronized void markBookAsBought() {
+        this.boughtBook = true;
+    }
 
-		public boolean done() {
-			if (step == 2 && bestSeller == null) {
-				System.out.println("Attempt failed: "+targetBookTitle+" not available for sale");
-			}
-			return ((step == 2 && bestSeller == null) || step == 4);
-		}
-	}  // End of inner class RequestPerformer
+    @Override
+    protected void takeDown() {
+        System.out.println("Buyer-agent " + getLocalName() + " terminating. Final Beliefs: [" + getBeliefs() + "]");
+    }
 }

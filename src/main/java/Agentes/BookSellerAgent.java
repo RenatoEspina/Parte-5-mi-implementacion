@@ -1,147 +1,115 @@
 package Agentes;
 
-import java.util.*;
-
-import jade.core.Agent;
-import jade.core.behaviours.*;
+import Comportamientos.*;
 import jade.domain.DFService;
 import jade.domain.FIPAException;
 import jade.domain.FIPAAgentManagement.DFAgentDescription;
 import jade.domain.FIPAAgentManagement.ServiceDescription;
-import jade.lang.acl.ACLMessage;
-import jade.lang.acl.MessageTemplate;
 
-public class BookSellerAgent extends Agent {
-	// The catalogue of books for sale (maps the title of a book to its price)
-	private Hashtable catalogue;
-	// The GUI by means of which the user can add books in the catalogue
-	private BookSellerGui myGui;
+public class BookSellerAgent extends BDIAgent {
 
-	// Put agent initializations here
-	protected void setup() {
-		// Create the catalogue
-		catalogue = new Hashtable();
+    private String bookTitle = "ElQuijote";
+    private int currentPrice = 100;
+    private boolean sold = false;
+    private int soldPrice = 0;
 
-		// Create and show the GUI 
-		myGui = new BookSellerGui(this);
-		myGui.showGui();
+    @Override
+    protected void setup() {
+        setSkills(
+            "RESPONDER_COTIZACION (enviar PROPOSE con precio o REFUSE si ya se vendió) | " +
+            "RESPONDER_ORDEN_COMPRA (enviar INFORM al concretar venta o FAILURE si no hay stock) | " +
+            "CAMBIAR_PRECIO (bajar mi precio si otro vende más barato o subirlo si quedan pocas iteraciones) | " +
+            "MANTENER_PRECIO (conservar mi precio actual)"
+        );
+        setBeliefs("Iteración 1/6 (solo conozco mi propio precio) | Catálogo disponible -> vacío | Historial de interacciones -> ninguna");
+        setDesires("Vender el libro de mi catálogo lo más caro posible antes de que termine la iteración 6 para ganar el premio al mejor vendedor.");
+        setIntentions("Esperar solicitudes de compradores y ajustar estratégicamente mi precio al final de cada iteración.");
 
-		// Register the book-selling service in the yellow pages
-		DFAgentDescription dfd = new DFAgentDescription();
-		dfd.setName(getAID());
-		ServiceDescription sd = new ServiceDescription();
-		sd.setType("book-selling");
-		sd.setName("JADE-book-trading");
-		dfd.addServices(sd);
-		try {
-			DFService.register(this, dfd);
-		}
-		catch (FIPAException fe) {
-			fe.printStackTrace();
-		}
+        Object[] args = getArguments();
+        if (args != null) {
+            for (Object arg : args) {
+                String[] parts = arg.toString().split(":");
+                if (parts.length == 2) {
+                    this.bookTitle = parts[0].trim();
+                    this.currentPrice = Integer.parseInt(parts[1].trim());
+                    updateCatalogue(this.bookTitle, String.valueOf(this.currentPrice));
+                }
+            }
+        }
 
-		// Add the behaviour serving queries from buyer agents
-		addBehaviour(new OfferRequestsServer());
+        // Registrar servicio en el DF (Páginas Amarillas)
+        DFAgentDescription dfd = new DFAgentDescription();
+        dfd.setName(getAID());
+        ServiceDescription sd = new ServiceDescription();
+        sd.setType("book-selling");
+        sd.setName("JADE-book-trading");
+        dfd.addServices(sd);
+        try {
+            DFService.register(this, dfd);
+        } catch (FIPAException fe) {
+            fe.printStackTrace();
+        }
 
-		// Add the behaviour serving purchase orders from buyer agents
-		addBehaviour(new PurchaseOrdersServer());
-	}
+        addBehaviour(new OfferRequestsServer(this));
+        addBehaviour(new PurchaseOrdersServer(this));
 
-	// Put agent clean-up operations here
-	protected void takeDown() {
-		// Deregister from the yellow pages
-		try {
-			DFService.deregister(this);
-		}
-		catch (FIPAException fe) {
-			fe.printStackTrace();
-		}
-		// Close the GUI
-		myGui.dispose();
-		// Printout a dismissal message
-		System.out.println("Seller-agent "+getAID().getName()+" terminating.");
-	}
+        // Registrar en el coordinador de Entorno
+        try {
+            Class<?> entornoClass = Class.forName("Entorno");
+            entornoClass.getMethod("registerSeller", String.class, BookSellerAgent.class, int.class)
+                    .invoke(null, getLocalName(), this, this.currentPrice);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
 
-	/**
-     This is invoked by the GUI when the user adds a new book for sale
-	 */
-	public void updateCatalogue(final String title, final int price) {
-		addBehaviour(new OneShotBehaviour() {
-			public void action() {
-				catalogue.put(title, new Integer(price));
-				System.out.println(title+" inserted into catalogue. Price = "+price);
-			}
-		} );
-	}
+    public void updateCatalogue(final String title, final String price) {
+        addBehaviour(new UpdateCatalogueBehaviour(this, title, price));
+    }
 
-	/**
-	   Inner class OfferRequestsServer.
-	   This is the behaviour used by Book-seller agents to serve incoming requests 
-	   for offer from buyer agents.
-	   If the requested book is in the local catalogue the seller agent replies 
-	   with a PROPOSE message specifying the price. Otherwise a REFUSE message is
-	   sent back.
-	 */
-	private class OfferRequestsServer extends CyclicBehaviour {
-		public void action() {
-			MessageTemplate mt = MessageTemplate.MatchPerformative(ACLMessage.CFP);
-			ACLMessage msg = myAgent.receive(mt);
-			if (msg != null) {
-				// CFP Message received. Process it
-				String title = msg.getContent();
-				ACLMessage reply = msg.createReply();
+    public void notifyIterationStart(int iteration, int maxIter) {
+        setIterationContext(iteration, maxIter);
+        if (iteration == 1) {
+            mutateBeliefs("Inicio de Iteración 1/" + maxIter + ": solo conozco mi propio precio ($" + currentPrice + ").");
+        } else {
+            mutateBeliefs("Inicio de Iteración " + iteration + "/" + maxIter + " (termina en la " + maxIter + "). Mi precio actual es $" + currentPrice + ".");
+        }
+    }
 
-				Integer price = (Integer) catalogue.get(title);
-				if (price != null) {
-					// The requested book is available for sale. Reply with the price
-					reply.setPerformative(ACLMessage.PROPOSE);
-					reply.setContent(String.valueOf(price.intValue()));
-				}
-				else {
-					// The requested book is NOT available for sale.
-					reply.setPerformative(ACLMessage.REFUSE);
-					reply.setContent("not-available");
-				}
-				myAgent.send(reply);
-			}
-			else {
-				block();
-			}
-		}
-	}  // End of inner class OfferRequestsServer
+    public void triggerEndOfIterationPriceAdjustment(String marketPricesInfo, int iter, int maxIter, Runnable onComplete) {
+        addBehaviour(new AdjustPriceBehaviour(this, bookTitle, marketPricesInfo, iter, maxIter, onComplete));
+    }
 
-	/**
-	   Inner class PurchaseOrdersServer.
-	   This is the behaviour used by Book-seller agents to serve incoming 
-	   offer acceptances (i.e. purchase orders) from buyer agents.
-	   The seller agent removes the purchased book from its catalogue 
-	   and replies with an INFORM message to notify the buyer that the
-	   purchase has been sucesfully completed.
-	 */
-	private class PurchaseOrdersServer extends CyclicBehaviour {
-		public void action() {
-			MessageTemplate mt = MessageTemplate.MatchPerformative(ACLMessage.ACCEPT_PROPOSAL);
-			ACLMessage msg = myAgent.receive(mt);
-			if (msg != null) {
-				// ACCEPT_PROPOSAL Message received. Process it
-				String title = msg.getContent();
-				ACLMessage reply = msg.createReply();
+    public synchronized void updatePriceInBeliefs(String title, int newPrice) {
+        this.currentPrice = newPrice;
+        String updated = getBeliefs().replaceAll(title + ":[0-9]+", title + ":" + newPrice);
+        setBeliefs(updated);
+    }
 
-				Integer price = (Integer) catalogue.remove(title);
-				if (price != null) {
-					reply.setPerformative(ACLMessage.INFORM);
-					System.out.println(title+" sold to agent "+msg.getSender().getName());
-				}
-				else {
-					// The requested book has been sold to another buyer in the meanwhile .
-					reply.setPerformative(ACLMessage.FAILURE);
-					reply.setContent("not-available");
-				}
-				myAgent.send(reply);
-			}
-			else {
-				block();
-			}
-		}
-	}  // End of inner class OfferRequestsServer
+    public synchronized void markAsSold(String buyerName) {
+        this.sold = true;
+        this.soldPrice = this.currentPrice;
+    }
+
+    public synchronized int getCurrentPrice() {
+        return currentPrice;
+    }
+
+    public synchronized boolean isSold() {
+        return sold;
+    }
+
+    public synchronized int getSoldPrice() {
+        return soldPrice;
+    }
+
+    @Override
+    protected void takeDown() {
+        try {
+            DFService.deregister(this);
+        } catch (FIPAException fe) {
+            // Ignorar si ya fue desregistrado
+        }
+        System.out.println("Seller-agent " + getLocalName() + " terminating.");
+    }
 }

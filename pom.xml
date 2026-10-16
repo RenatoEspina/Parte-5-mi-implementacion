@@ -47,15 +47,13 @@
       </plugin>
 
       <!-- mvn exec:java starts the JADE main container with the RMA GUI. -->
+      <!-- mvn exec:java inicia directamente la clase central Entorno -->
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.5.0</version>
         <configuration>
-          <mainClass>jade.Boot</mainClass>
-          <arguments>
-            <argument>-gui</argument>
-          </arguments>
+          <mainClass>Entorno</mainClass>
         </configuration>
       </plugin>
     </plugins>

@@ -13,6 +13,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>25</maven.compiler.release>
     <jade.version>m4.5.3</jade.version>
+    <jackson.version>2.18.2</jackson.version>
   </properties>
 
   <repositories>
@@ -28,6 +29,12 @@
       <groupId>com.gitlab.jade-project</groupId>
       <artifactId>jade</artifactId>
       <version>${jade.version}</version>
+    </dependency>
+    <!-- JSON for the vLLM (OpenAI-compatible) HTTP client in the Llm package. -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
     </dependency>
   </dependencies>
 
